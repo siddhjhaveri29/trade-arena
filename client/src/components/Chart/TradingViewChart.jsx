@@ -52,8 +52,10 @@ export function TradingViewChart({ symbol, market, interval, onIntervalChange })
     if (!seriesRef.current) return
     setStatus('loading')
     try {
-      const API_BASE = import.meta.env.VITE_API_URL || ''
-      const url = `${API_BASE}/api/chart?symbol=${encodeURIComponent(symbol)}&market=${market}&interval=${interval}`
+      // Use /api/chart relative URL:
+      // - Production (Vercel): hits Vercel serverless function (AWS IP, not blocked by Yahoo)
+      // - Local dev: Vite proxy forwards to Railway
+      const url = `/api/chart?symbol=${encodeURIComponent(symbol)}&market=${market}&interval=${interval}`
       const res = await fetch(url)
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Failed to fetch chart data')
