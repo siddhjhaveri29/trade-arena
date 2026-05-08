@@ -2,32 +2,43 @@
  * GET /api/chart?symbol=RELIANCE&market=IN&interval=D
  * Returns OHLCV candlestick data.
  *
- * Data sources (in priority order):
- *  - D/W intervals → Stooq.com CSV (works from cloud IPs, no key needed)
- *  - Intraday      → Yahoo Finance v8 (query1 → query2 fallback)
+ * Primary:  Twelve Data API (works from cloud IPs, 800 free calls/day)
+ * Fallback: Yahoo Finance v8 (query1 → query2, may be rate-limited on cloud)
  */
 import { Router } from 'express'
 import axios from 'axios'
 
 const router = Router()
 
+const TWELVE_DATA_KEY = process.env.TWELVE_DATA_KEY
+
 const INTERVAL_MAP = {
-  '1':   { yInterval: '1m',  range: '1d',   stooqI: null },
-  '5':   { yInterval: '5m',  range: '5d',   stooqI: null },
-  '15':  { yInterval: '15m', range: '60d',  stooqI: null },
-  '30':  { yInterval: '30m', range: '60d',  stooqI: null },
-  '60':  { yInterval: '60m', range: '730d', stooqI: null },
-  '240': { yInterval: '60m', range: '730d', stooqI: null },
-  'D':   { yInterval: '1d',  range: '10y',  stooqI: 'd'  },
-  'W':   { yInterval: '1wk', range: 'max',  stooqI: 'w'  },
+  '1':   { tdInterval: '1min',  yInterval: '1m',  range: '1d'   },
+  '5':   { tdInterval: '5min',  yInterval: '5m',  range: '5d'   },
+  '15':  { tdInterval: '15min', yInterval: '15m', range: '60d'  },
+  '30':  { tdInterval: '30min', yInterval: '30m', range: '60d'  },
+  '60':  { tdInterval: '1h',    yInterval: '60m', range: '730d' },
+  '240': { tdInterval: '4h',    yInterval: '60m', range: '730d' },
+  'D':   { tdInterval: '1day',  yInterval: '1d',  range: '10y'  },
+  'W':   { tdInterval: '1week', yInterval: '1wk', range: 'max'  },
 }
 
-// ── Ticker conversion helpers ────────────────────────────────────────────────
+// ── Ticker helpers ───────────────────────────────────────────────────────────
 
 const YAHOO_SPECIAL = {
   NIFTY: '^NSEI', BANKNIFTY: '^NSEBANK', SENSEX: '^BSESN',
   NIFTYMIDCAP: '^NSEMDCP100',
   GOLD: 'GC=F', SILVER: 'SI=F', CRUDEOIL: 'CL=F', NATURALGAS: 'NG=F',
+}
+
+// Twelve Data symbol format for Indian stocks: RELIANCE:NSE
+const TD_SPECIAL = {
+  '^NSEI':    { symbol: 'NIFTY 50',  exchange: 'INDICES' },
+  '^NSEBANK': { symbol: 'NIFTY BANK', exchange: 'INDICES' },
+  '^BSESN':   { symbol: 'SENSEX',    exchange: 'INDICES' },
+  'GC=F':     { symbol: 'XAU/USD',   exchange: 'Forex'   },
+  'SI=F':     { symbol: 'XAG/USD',   exchange: 'Forex'   },
+  'CL=F':     { symbol: 'WTI/USD',   exchange: 'Forex'   },
 }
 
 function toYahooTicker(symbol, market, yahooKey) {
@@ -36,55 +47,59 @@ function toYahooTicker(symbol, market, yahooKey) {
   return YAHOO_SPECIAL[symbol] || `${symbol}.NS`
 }
 
-// Stooq uses lowercase; indices use ^ prefix; futures use .f suffix
-function toStooqTicker(yahooTicker, market) {
-  // Indices: ^NSEI → ^nsei
-  if (yahooTicker.startsWith('^')) return yahooTicker.toLowerCase()
-  // Futures: GC=F → gc.f
-  if (yahooTicker.endsWith('=F')) return yahooTicker.replace('=F', '').toLowerCase() + '.f'
-  // Indian stocks: RELIANCE.NS → reliance.ns
-  if (yahooTicker.endsWith('.NS') || yahooTicker.endsWith('.BO')) return yahooTicker.toLowerCase()
-  // US stocks: AAPL → aapl.us
-  if (market === 'US') return yahooTicker.toLowerCase() + '.us'
-  return yahooTicker.toLowerCase()
+function toTwelveDataParams(yahooTicker, market) {
+  if (TD_SPECIAL[yahooTicker]) return TD_SPECIAL[yahooTicker]
+  if (yahooTicker.endsWith('.NS')) return { symbol: yahooTicker.replace('.NS', ''), exchange: 'NSE' }
+  if (yahooTicker.endsWith('.BO')) return { symbol: yahooTicker.replace('.BO', ''), exchange: 'BSE' }
+  // US stock
+  return { symbol: yahooTicker, exchange: '' }
 }
 
-// ── Stooq daily/weekly chart ─────────────────────────────────────────────────
+// ── Twelve Data fetch ────────────────────────────────────────────────────────
 
-async function fetchStooqChart(stooqTicker, stooqInterval) {
-  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqTicker)}&i=${stooqInterval}`
-  const { data } = await axios.get(url, {
-    timeout: 15000,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-      'Accept': 'text/csv,text/plain,*/*',
-    }
+async function fetchTwelveData(yahooTicker, market, tdInterval) {
+  if (!TWELVE_DATA_KEY) throw new Error('TWELVE_DATA_KEY not set')
+
+  const { symbol, exchange } = toTwelveDataParams(yahooTicker, market)
+  const params = {
+    symbol,
+    interval: tdInterval,
+    outputsize: 5000,
+    apikey: TWELVE_DATA_KEY,
+    format: 'JSON',
+  }
+  if (exchange) params.exchange = exchange
+
+  const { data } = await axios.get('https://api.twelvedata.com/time_series', {
+    params,
+    timeout: 20000,
+    headers: { 'User-Agent': 'TradeArena/1.0' }
   })
 
-  if (!data || data.includes('No data') || data.trim().length < 20) {
-    throw new Error(`No Stooq data for ${stooqTicker}`)
-  }
+  if (data.status === 'error') throw new Error(data.message || 'Twelve Data error')
 
-  const lines = data.trim().split('\n')
-  // Header: Date,Open,High,Low,Close,Volume
-  const candles = []
-  for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].split(',')
-    if (parts.length < 5) continue
-    const [dateStr, open, high, low, close, volume] = parts
-    if (!dateStr || !close || close.trim() === '') continue
-    // Stooq dates are YYYY-MM-DD
-    const time = Math.floor(new Date(dateStr.trim()).getTime() / 1000)
-    if (isNaN(time)) continue
-    const o = parseFloat(open), h = parseFloat(high), l = parseFloat(low), c = parseFloat(close)
-    if (isNaN(o) || isNaN(h) || isNaN(l) || isNaN(c)) continue
-    candles.push({ time, open: o, high: h, low: l, close: c, volume: parseInt(volume) || 0 })
-  }
+  const values = data.values
+  if (!values || values.length === 0) throw new Error('No data from Twelve Data')
 
-  return candles.sort((a, b) => a.time - b.time)
+  const candles = values.map(v => {
+    const dt = v.datetime.includes(' ')
+      ? new Date(v.datetime.replace(' ', 'T') + 'Z').getTime() / 1000
+      : new Date(v.datetime).getTime() / 1000
+    return {
+      time:   Math.floor(dt),
+      open:   parseFloat(v.open),
+      high:   parseFloat(v.high),
+      low:    parseFloat(v.low),
+      close:  parseFloat(v.close),
+      volume: parseInt(v.volume) || 0,
+    }
+  }).filter(c => !isNaN(c.open))
+
+  // Twelve Data returns newest first — reverse to oldest first
+  return candles.reverse()
 }
 
-// ── Yahoo Finance intraday chart ─────────────────────────────────────────────
+// ── Yahoo Finance fallback ───────────────────────────────────────────────────
 
 const YF_HOSTS = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']
 
@@ -105,8 +120,7 @@ async function fetchYahooChart(ticker, yInterval, range) {
         }
       )
       const result = data?.chart?.result?.[0]
-      if (!result) throw new Error('No result in response')
-
+      if (!result) throw new Error('No result')
       const { timestamp, indicators } = result
       const quote = indicators?.quote?.[0]
       if (!timestamp || !quote) throw new Error('Empty result')
@@ -115,14 +129,13 @@ async function fetchYahooChart(ticker, yInterval, range) {
       for (let i = 0; i < timestamp.length; i++) {
         const o = quote.open?.[i], h = quote.high?.[i]
         const l = quote.low?.[i],  c = quote.close?.[i]
-        const v = quote.volume?.[i]
         if (o == null || h == null || l == null || c == null) continue
         if (o === 0 && h === 0 && l === 0 && c === 0) continue
         candles.push({
           time: timestamp[i],
           open: +o.toFixed(4), high: +h.toFixed(4),
           low:  +l.toFixed(4), close: +c.toFixed(4),
-          volume: v ?? 0,
+          volume: quote.volume?.[i] ?? 0,
         })
       }
       return candles
@@ -145,30 +158,26 @@ router.get('/', async (req, res) => {
   try {
     let candles
 
-    if (cfg.stooqI) {
-      // Daily / Weekly → Stooq (works from cloud IPs)
-      const stooqTicker = toStooqTicker(yahooTicker, market)
+    // Try Twelve Data first (reliable from cloud)
+    if (TWELVE_DATA_KEY) {
       try {
-        candles = await fetchStooqChart(stooqTicker, cfg.stooqI)
-        console.log(`[chart] Stooq ${stooqTicker}: ${candles.length} candles`)
-      } catch (stooqErr) {
-        // Stooq failed — fall back to Yahoo Finance
-        console.warn(`[chart] Stooq failed (${stooqErr.message}), trying Yahoo`)
+        candles = await fetchTwelveData(yahooTicker, market, cfg.tdInterval)
+        console.log(`[chart] TwelveData ${yahooTicker}: ${candles.length} candles`)
+      } catch (tdErr) {
+        console.warn(`[chart] TwelveData failed (${tdErr.message}), trying Yahoo`)
         candles = await fetchYahooChart(yahooTicker, cfg.yInterval, cfg.range)
       }
     } else {
-      // Intraday → Yahoo Finance
       candles = await fetchYahooChart(yahooTicker, cfg.yInterval, cfg.range)
     }
 
-    // For 240 (4h): aggregate 1h bars into 4h groups
     if (interval === '240' && candles.length > 0) candles = aggregate4h(candles)
 
     res.json({ symbol: yahooTicker, interval: cfg.yInterval, candles })
   } catch (err) {
     const status = err.response?.status
     const msg = status
-      ? `Data provider returned ${status} for ${yahooTicker} — market may be closed or symbol unavailable`
+      ? `Data provider returned ${status} for ${yahooTicker}`
       : (err.message || 'Failed to fetch chart data')
     console.error('[chart]', yahooTicker, msg)
     res.status(500).json({ error: msg })
@@ -185,9 +194,9 @@ function aggregate4h(candles) {
       groups[bucket] = { time: bucket, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }
     } else {
       const g = groups[bucket]
-      g.high   = Math.max(g.high, c.high)
-      g.low    = Math.min(g.low,  c.low)
-      g.close  = c.close
+      g.high = Math.max(g.high, c.high)
+      g.low  = Math.min(g.low,  c.low)
+      g.close = c.close
       g.volume += c.volume
     }
   }
