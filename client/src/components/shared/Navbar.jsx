@@ -32,7 +32,8 @@ export function Navbar({ onSymbolSelect, activeMarket = 'IN' }) {
     setSearchLoading(true)
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&market=${searchMarket}`)
+        const API_BASE = import.meta.env.VITE_API_URL || ''
+        const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}&market=${searchMarket}`)
         const data = await res.json()
         setSearchResults(Array.isArray(data) ? data : [])
       } catch (e) {/* ignore */} finally { setSearchLoading(false) }
