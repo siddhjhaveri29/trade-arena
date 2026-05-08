@@ -25,7 +25,8 @@ export function Watchlist({ onSymbolSelect, selectedSymbol, activeMarket, onMark
     setSearchLoading(true)
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&market=${activeMarket}`)
+        const API_BASE = import.meta.env.VITE_API_URL || ''
+        const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}&market=${activeMarket}`)
         const data = await res.json()
         setSearchResults(Array.isArray(data) ? data : [])
       } catch (e) {/* ignore */} finally { setSearchLoading(false) }
@@ -121,22 +122,27 @@ export function Watchlist({ onSymbolSelect, selectedSymbol, activeMarket, onMark
               type="text"
               value={searchQuery}
               onChange={handleSearchChange}
-              placeholder={`Search ${activeMarket === 'IN' ? 'NSE/MCX' : 'US'} symbols...`}
+              placeholder={`Search ${activeMarket === 'IN' ? 'NSE/BSE/MCX' : 'US'} symbols...`}
               className="w-full bg-bg-card border border-border-color rounded px-2 py-1.5 text-xs text-text-primary placeholder-text-secondary outline-none focus:border-trade-blue"
             />
             {searchResults.length > 0 && (
               <div className="absolute bottom-full mb-1 left-0 right-0 bg-bg-card border border-border-color rounded shadow-xl max-h-48 overflow-y-auto z-50">
                 {searchResults.map(item => (
                   <button
-                    key={`${item.symbol}-${activeMarket}`}
+                    key={`${item.symbol}-${item.yahooKey || activeMarket}`}
                     className="w-full flex items-center justify-between px-2 py-2 text-xs hover:bg-bg-hover text-left"
                     onClick={() => handleAddSymbol(item)}
                   >
-                    <div>
-                      <span className="text-text-primary font-medium">{item.symbol}</span>
-                      <span className="text-text-secondary ml-1 truncate">{item.name?.substring(0, 20)}</span>
+                    <div className="flex flex-col min-w-0">
+                      <div className="flex items-center gap-1">
+                        <span className="text-text-primary font-medium">{item.symbol}</span>
+                        {item.exchange && (
+                          <span className="text-xs text-text-secondary bg-bg-hover rounded px-1">{item.exchange}</span>
+                        )}
+                      </div>
+                      <span className="text-text-secondary truncate">{item.name?.substring(0, 25)}</span>
                     </div>
-                    <span className="text-trade-green text-xs ml-1">+</span>
+                    <span className="text-trade-green text-xs ml-1 flex-shrink-0">+</span>
                   </button>
                 ))}
               </div>

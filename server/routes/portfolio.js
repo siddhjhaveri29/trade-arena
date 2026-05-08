@@ -24,6 +24,45 @@ router.get('/', requireAuth, async (req, res) => {
   res.json(enriched)
 })
 
+// POST /api/portfolio/add-funds  { market, amount }
+router.post('/add-funds', requireAuth, async (req, res) => {
+  const { market = 'IN', amount } = req.body
+  const parsed = parseFloat(amount)
+
+  if (!parsed || parsed <= 0 || parsed > 10_000_000) {
+    return res.status(400).json({ error: 'Amount must be between 1 and 10,000,000' })
+  }
+
+  const supabase = getServiceClient()
+
+  const { data: portfolio, error: fetchErr } = await supabase
+    .from('portfolios')
+    .select('id, cash_balance, initial_balance')
+    .eq('user_id', req.user.id)
+    .eq('market', market)
+    .single()
+
+  if (fetchErr || !portfolio) {
+    return res.status(404).json({ error: 'Portfolio not found' })
+  }
+
+  const newCash = portfolio.cash_balance + parsed
+  const newInitial = portfolio.initial_balance + parsed
+
+  const { error: updateErr } = await supabase
+    .from('portfolios')
+    .update({
+      cash_balance:    newCash,
+      initial_balance: newInitial,
+      updated_at:      new Date().toISOString()
+    })
+    .eq('id', portfolio.id)
+
+  if (updateErr) return res.status(500).json({ error: updateErr.message })
+
+  res.json({ success: true, cash_balance: newCash, added: parsed })
+})
+
 // GET /api/portfolio/positions?market=IN
 router.get('/positions', requireAuth, async (req, res) => {
   const { market } = req.query

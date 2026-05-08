@@ -17,6 +17,9 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState(profile?.display_name || '')
   const [bio, setBio] = useState(profile?.bio || '')
   const [savingProfile, setSavingProfile] = useState(false)
+  const [showAddFunds, setShowAddFunds] = useState(false)
+  const [fundsAmount, setFundsAmount] = useState('')
+  const [addingFunds, setAddingFunds] = useState(false)
 
   const { stats } = useStats(activeMarket)
   const { snapshots, initialBalance } = useEquityCurve(activeMarket, chartPeriod)
@@ -30,6 +33,30 @@ export default function ProfilePage() {
     equity: s.equity,
     returnPct: initialBalance ? ((s.equity - initialBalance) / initialBalance) * 100 : 0
   }))
+
+  async function handleAddFunds() {
+    const amount = parseFloat(fundsAmount)
+    if (!amount || amount <= 0) return addToast('error', 'Enter a valid amount')
+    setAddingFunds(true)
+    try {
+      const res = await apiFetch('/api/portfolio/add-funds', {
+        method: 'POST',
+        body: { market: activeMarket, amount }
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to add funds')
+      const currency = activeMarket === 'IN' ? '₹' : '$'
+      addToast('success', `Added ${currency}${amount.toLocaleString()} to your ${activeMarket === 'IN' ? 'India' : 'US'} portfolio`)
+      setShowAddFunds(false)
+      setFundsAmount('')
+      // Reload the page to refresh portfolio values
+      window.location.reload()
+    } catch (err) {
+      addToast('error', err.message)
+    } finally {
+      setAddingFunds(false)
+    }
+  }
 
   async function handleSaveProfile() {
     setSavingProfile(true)
@@ -112,23 +139,71 @@ export default function ProfilePage() {
 
           {/* Portfolio summary */}
           {portfolio && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <StatCard title="Total Value"
-                value={`${currency}${(portfolio.total_value ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
-                color="text-text-primary"
-              />
-              <StatCard title="Cash Balance"
-                value={`${currency}${(portfolio.cash_balance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
-                color="text-text-primary"
-              />
-              <StatCard title="Total Return"
-                value={`${(portfolio.total_return_pct ?? 0) >= 0 ? '+' : ''}${(portfolio.total_return_pct ?? 0).toFixed(2)}%`}
-                color={(portfolio.total_return_pct ?? 0) >= 0 ? 'text-trade-green' : 'text-trade-red'}
-              />
-              <StatCard title="Starting Capital"
-                value={`${currency}${(portfolio.initial_balance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
-                color="text-text-secondary"
-              />
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <StatCard title="Total Value"
+                  value={`${currency}${(portfolio.total_value ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+                  color="text-text-primary"
+                />
+                <StatCard title="Cash Balance"
+                  value={`${currency}${(portfolio.cash_balance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+                  color="text-text-primary"
+                />
+                <StatCard title="Total Return"
+                  value={`${(portfolio.total_return_pct ?? 0) >= 0 ? '+' : ''}${(portfolio.total_return_pct ?? 0).toFixed(2)}%`}
+                  color={(portfolio.total_return_pct ?? 0) >= 0 ? 'text-trade-green' : 'text-trade-red'}
+                />
+                <StatCard title="Starting Capital"
+                  value={`${currency}${(portfolio.initial_balance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
+                  color="text-text-secondary"
+                />
+              </div>
+
+              {/* Add Funds */}
+              {showAddFunds ? (
+                <div className="bg-bg-card border border-border-color rounded-xl p-4">
+                  <h3 className="text-text-primary text-sm font-medium mb-3">
+                    Add Funds to {activeMarket === 'IN' ? '🇮🇳 India' : '🇺🇸 US'} Portfolio
+                  </h3>
+                  <div className="flex gap-2 items-center">
+                    <span className="text-text-secondary text-sm">{currency}</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000000"
+                      value={fundsAmount}
+                      onChange={e => setFundsAmount(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleAddFunds()}
+                      placeholder={activeMarket === 'IN' ? '100000' : '10000'}
+                      className="flex-1 bg-bg-secondary border border-border-color rounded px-3 py-2 text-sm text-text-primary outline-none focus:border-trade-blue"
+                      autoFocus
+                    />
+                    <button
+                      onClick={handleAddFunds}
+                      disabled={addingFunds || !fundsAmount}
+                      className="px-4 py-2 bg-trade-green text-white text-sm rounded hover:opacity-90 disabled:opacity-50 font-medium"
+                    >
+                      {addingFunds ? 'Adding...' : 'Add'}
+                    </button>
+                    <button
+                      onClick={() => { setShowAddFunds(false); setFundsAmount('') }}
+                      className="px-3 py-2 border border-border-color text-text-secondary text-sm rounded hover:bg-bg-hover"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <p className="text-text-secondary text-xs mt-2">
+                    This adds virtual paper trading funds. Maximum {currency}10,000,000 per transaction.
+                  </p>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowAddFunds(true)}
+                  className="flex items-center gap-2 px-4 py-2 border border-trade-green text-trade-green text-sm rounded-lg hover:bg-trade-green/10 transition-colors"
+                >
+                  <span>+</span> Add Funds
+                </button>
+              )}
             </div>
           )}
 
