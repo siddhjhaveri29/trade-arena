@@ -30,7 +30,8 @@ export function PriceProvider({ children }) {
       ]
       if (allSymbols.length === 0) return
       try {
-        const res = await fetch(`/api/prices?symbols=${allSymbols.join(',')}`)
+        const API_BASE = import.meta.env.VITE_API_URL || ''
+        const res = await fetch(`${API_BASE}/api/prices?symbols=${allSymbols.join(',')}`)
         const data = await res.json()
         if (mountedRef.current) updatePrices(data)
       } catch (e) {/* ignore */}
