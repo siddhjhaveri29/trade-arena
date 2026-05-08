@@ -179,11 +179,11 @@ function WatchlistSection({ items, prices, selectedSymbol, market, onSelect, onR
               isSelected ? 'bg-bg-hover border-trade-blue' : 'border-transparent'
             } ${isUp ? 'hover:border-trade-green' : 'hover:border-trade-red'}`}
           >
-            <div className="flex flex-col items-start min-w-0">
-              <span className="text-text-primary font-medium">{item.symbol}</span>
-              <span className="text-text-secondary text-xs truncate">{item.display_name || item.symbol}</span>
+            <div className="flex flex-col items-start min-w-0 flex-1 overflow-hidden">
+              <span className="text-text-primary font-medium truncate w-full">{item.symbol}</span>
+              <span className="text-text-secondary text-xs truncate w-full">{item.display_name || item.symbol}</span>
             </div>
-            <div className="flex flex-col items-end ml-2">
+            <div className="flex flex-col items-end ml-2 flex-shrink-0">
               <span className="text-text-primary font-mono">
                 {price != null
                   ? market === 'IN'
