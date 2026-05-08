@@ -3,7 +3,8 @@
  * Returns OHLCV candlestick data.
  *
  * Primary:  Twelve Data API (works from cloud IPs, 800 free calls/day)
- * Fallback: Yahoo Finance v8 (query1 → query2, may be rate-limited on cloud)
+ * Fallback: Yahoo Finance v8 (query1 → query2)
+ * Cache:    In-memory, TTL 4h for D/W, 5min for intraday
  */
 import { Router } from 'express'
 import axios from 'axios'
@@ -11,6 +12,23 @@ import axios from 'axios'
 const router = Router()
 
 const TWELVE_DATA_KEY = process.env.TWELVE_DATA_KEY
+
+// ── In-memory cache ──────────────────────────────────────────────────────────
+const chartCache = new Map() // key → { candles, fetchedAt }
+const CACHE_TTL = {
+  intraday: 5 * 60 * 1000,       // 5 minutes
+  daily:    4 * 60 * 60 * 1000,  // 4 hours
+}
+function getCached(key, isIntraday) {
+  const entry = chartCache.get(key)
+  if (!entry) return null
+  const ttl = isIntraday ? CACHE_TTL.intraday : CACHE_TTL.daily
+  if (Date.now() - entry.fetchedAt > ttl) { chartCache.delete(key); return null }
+  return entry.candles
+}
+function setCache(key, candles) {
+  chartCache.set(key, { candles, fetchedAt: Date.now() })
+}
 
 const INTERVAL_MAP = {
   '1':   { tdInterval: '1min',  yInterval: '1m',  range: '1d'   },
@@ -154,34 +172,49 @@ router.get('/', async (req, res) => {
 
   const cfg = INTERVAL_MAP[interval] || INTERVAL_MAP['D']
   const yahooTicker = toYahooTicker(symbol.toUpperCase(), market, yahooKey)
+  const isIntraday = !['D', 'W'].includes(interval)
+  const cacheKey = `${yahooTicker}:${interval}`
 
-  try {
-    let candles
-
-    // Try Twelve Data first (reliable from cloud)
-    if (TWELVE_DATA_KEY) {
-      try {
-        candles = await fetchTwelveData(yahooTicker, market, cfg.tdInterval)
-        console.log(`[chart] TwelveData ${yahooTicker}: ${candles.length} candles`)
-      } catch (tdErr) {
-        console.warn(`[chart] TwelveData failed (${tdErr.message}), trying Yahoo`)
-        candles = await fetchYahooChart(yahooTicker, cfg.yInterval, cfg.range)
-      }
-    } else {
-      candles = await fetchYahooChart(yahooTicker, cfg.yInterval, cfg.range)
-    }
-
-    if (interval === '240' && candles.length > 0) candles = aggregate4h(candles)
-
-    res.json({ symbol: yahooTicker, interval: cfg.yInterval, candles })
-  } catch (err) {
-    const status = err.response?.status
-    const msg = status
-      ? `Data provider returned ${status} for ${yahooTicker}`
-      : (err.message || 'Failed to fetch chart data')
-    console.error('[chart]', yahooTicker, msg)
-    res.status(500).json({ error: msg })
+  // Serve from cache if fresh
+  const cached = getCached(cacheKey, isIntraday)
+  if (cached) {
+    return res.json({ symbol: yahooTicker, interval: cfg.yInterval, candles: cached, cached: true })
   }
+
+  const errors = []
+  let candles = null
+
+  // ── 1. Twelve Data (reliable from cloud, free plan = US only) ────────────
+  if (TWELVE_DATA_KEY) {
+    try {
+      candles = await fetchTwelveData(yahooTicker, market, cfg.tdInterval)
+      console.log(`[chart] TwelveData ✓ ${yahooTicker}: ${candles.length} candles`)
+    } catch (tdErr) {
+      errors.push(`TwelveData: ${tdErr.message}`)
+    }
+  }
+
+  // ── 2. Yahoo Finance fallback (query1 → query2) ──────────────────────────
+  if (!candles) {
+    try {
+      candles = await fetchYahooChart(yahooTicker, cfg.yInterval, cfg.range)
+      console.log(`[chart] Yahoo ✓ ${yahooTicker}: ${candles.length} candles`)
+    } catch (yfErr) {
+      const status = yfErr.response?.status
+      errors.push(`Yahoo: ${status ? `HTTP ${status}` : yfErr.message}`)
+    }
+  }
+
+  if (!candles || candles.length === 0) {
+    const msg = errors.join(' | ') || 'Failed to fetch chart data'
+    console.error(`[chart] ✗ ${yahooTicker}:`, msg)
+    return res.status(500).json({ error: msg })
+  }
+
+  if (interval === '240' && candles.length > 0) candles = aggregate4h(candles)
+
+  setCache(cacheKey, candles)
+  res.json({ symbol: yahooTicker, interval: cfg.yInterval, candles })
 })
 
 // ── 4h aggregation ───────────────────────────────────────────────────────────
